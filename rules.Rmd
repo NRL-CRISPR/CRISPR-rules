@@ -1,0 +1,585 @@
+# Packages
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(rules)
+library(Cubist)
+library(tidypredict)
+library(C50)
+library(DALEXtra)
+library(Biostrings)
+library(xrf)
+library(conflicted)
+library(ggrepel)
+conflict_prefer("rename", "dplyr")
+conflict_prefer("filter", "dplyr")
+
+theme_set(theme_classic(base_size = 20))
+
+theme2 <- theme(panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                axis.line = element_line(colour = "black"),
+                legend.title = element_text(color = "black"),
+                legend.text = element_text(color = "black"),
+                axis.text.x = element_text(size = 16, color = "black"),
+                axis.text.y = element_text(size = 14, color = "black"),
+                axis.title = element_text(color = "black"),
+                strip.text.x = element_text(size = 14, color = "black"),
+                strip.text.y = element_text(size = 14, color = "black"),
+                strip.background = element_blank()
+)
+```
+
+
+### Watson-Crick
+
+```{r}
+IUPAC_mismatch_1 <- function(string1, string2){
+  
+  string1df <- str_split(string1, '')[[1]] %>% 
+    as_tibble()
+  
+  string2df <- str_split(string2, '')[[1]] %>% 
+    as_tibble()
+  
+  df_out <- bind_cols(string1df, string2df) %>% 
+    janitor::clean_names() %>% 
+    mutate(
+      mismatch = case_when(
+        # Matches (if 0 then it's a match)
+        ## Degeneracy, where:
+        ### N could be ATCG
+        ### Y could be CT
+        ### R could be AG
+        (value_1 == 'N') & (value_2 == 'A' | value_2 == 'T' | value_2 == 'C' | value_2 == 'G') ~ 0,
+        (value_1 == 'Y') & (value_2 == 'C' | value_2 == 'T') ~ 0,
+        (value_1 == 'R') & (value_2 == 'A' | value_2 == 'G') ~ 0,
+        # Normal matching
+        (value_1 == 'A') & (value_2 == 'A') ~ 0,
+        (value_1 == 'G') & (value_2 == 'G') ~ 0,
+        (value_1 == 'T') & (value_2 == 'T') ~ 0,
+        (value_1 == 'C') & (value_2 == 'C') ~ 0,
+        # Mismatch (if 1 then it's a mismatch)
+        TRUE ~ 1)
+      )
+  
+  return(df_out$mismatch)
+}
+```
+
+
+### Asymmetric G-U wobble
+
+```{r}
+IUPAC_mismatch_2 <- function(string1, string2){
+  
+  string1df <- str_split(string1, '')[[1]] %>% 
+    as_tibble()
+  
+  string2df <- str_split(string2, '')[[1]] %>% 
+    as_tibble()
+  
+  df_out <- bind_cols(string1df, string2df) %>% 
+    janitor::clean_names() %>% 
+    mutate(
+      mismatch = case_when(
+        # Matches (if 0 then it's a match)
+        ## Degeneracy, where:
+        ### N could be ATCG
+        ### Y could be CT
+        ### R could be AG
+        (value_1 == 'N') & (value_2 == 'A' | value_2 == 'T' | value_2 == 'C' | value_2 == 'G') ~ 0,
+        (value_1 == 'Y') & (value_2 == 'C' | value_2 == 'T') ~ 0,
+        (value_1 == 'R') & (value_2 == 'A' | value_2 == 'G') ~ 0,
+        # Normal matching
+        (value_1 == 'A') & (value_2 == 'A') ~ 0,
+        (value_1 == 'G') & (value_2 == 'G') ~ 0,
+        (value_1 == 'T') & (value_2 == 'T') ~ 0,
+        (value_1 == 'C') & (value_2 == 'C') ~ 0,
+        # Asymmetric G-U wobble – treats G-U pairs as matches when G is in guide and U in target
+        (value_1 == 'C') & (value_2 == 'T') ~ 0,
+        # Mismatch (if 1 then it's a mismatch)
+        TRUE ~ 1)
+      )
+  
+  return(df_out$mismatch)
+}
+```
+
+
+### Symmetric G-U wobble
+
+```{r}
+IUPAC_mismatch_3 <- function(string1, string2){
+  
+  string1df <- str_split(string1, '')[[1]] %>% 
+    as_tibble()
+  
+  string2df <- str_split(string2, '')[[1]] %>% 
+    as_tibble()
+  
+  df_out <- bind_cols(string1df, string2df) %>% 
+    janitor::clean_names() %>% 
+    mutate(
+      mismatch = case_when(
+        # Matches (if 0 then it's a match)
+        ## Degeneracy, where:
+        ### N could be ATCG
+        ### Y could be CT
+        ### R could be AG
+        (value_1 == 'N') & (value_2 == 'A' | value_2 == 'T' | value_2 == 'C' | value_2 == 'G') ~ 0,
+        (value_1 == 'Y') & (value_2 == 'C' | value_2 == 'T') ~ 0,
+        (value_1 == 'R') & (value_2 == 'A' | value_2 == 'G') ~ 0,
+        # Normal matching
+        (value_1 == 'A') & (value_2 == 'A') ~ 0,
+        (value_1 == 'G') & (value_2 == 'G') ~ 0,
+        (value_1 == 'T') & (value_2 == 'T') ~ 0,
+        (value_1 == 'C') & (value_2 == 'C') ~ 0,
+        # Asymmetric G-U wobble – treats G-U pairs as matches when G is in guide and U in target
+        (value_1 == 'C') & (value_2 == 'T') ~ 0,
+        # Symmetric G-U wobble – treats both G-U and U-G pairs as matches
+        (value_1 == 'A') & (value_2 == 'G') ~ 0,
+        # Mismatch (if 1 then it's a mismatch)
+        TRUE ~ 1)
+      )
+  
+  return(df_out$mismatch)
+}
+```
+
+
+
+
+
+```{r}
+get_mismatch <- function(fasta_path, number, mismatch_function){
+  cr5 <- readDNAStringSet(fasta_path)
+  test_guide <- as.character(cr5)[number] # 5-L2
+  test_string <- as.character(cr5)[3:28]
+  
+  out_df <- (sapply(test_string, function(i) mismatch_function(test_guide, i)))
+  
+  L2_5 <- str_split(test_guide, '')[[1]] %>% 
+    as_tibble() %>% 
+    rownames_to_column() %>% 
+    bind_cols(out_df %>% as_tibble()) 
+  
+  L2_5 <- L2_5 %>%
+    mutate(
+      rowname = as.character(seq(from = 28, to = 1, by = -1)) # reverse the numbering
+    ) %>% 
+    pivot_longer(!value:rowname,
+                 names_to = 'name',
+                 values_to = 'mismatch') %>%
+    mutate(
+      rowname = as.integer(rowname),
+      mismatch = as.integer(mismatch),
+      location = case_when(mismatch == 1 ~ rowname),
+      location = replace_na(location, replace = 0)
+     ) %>%
+    group_by(name) %>%
+    summarise(
+      n = length(which(location != 0)),
+      min = min(which(location != 0)),
+      mean = mean(which(location != 0)),
+      IQR = IQR(which(location != 0)),
+      max = max(location),
+      range = max - min,
+      n_first_quarter = length(which(location > 0 & location <= 7)),
+      n_first_half = length(which(location > 0 & location < 14)),
+      n_middle_half = length(which(location > 7 & location < 21)),
+      n_last_half = length(which(location >= 14)),
+      n_last_quarter = length(which(location >= 21)),
+      region_5_8 = length(which(location >= 5 & location <= 8)),
+      region_9_14 = length(which(location >= 9 & location <= 14)),
+      freq_first_quarter = n_first_quarter / 7,
+      freq_first_half = n_first_half / 14,
+      freq_middle_half = n_middle_half / 14,
+      freq_last_half = n_last_half / 14,
+      freq_last_quarter = n_last_quarter / 7,
+      freq_region_5_8 = region_5_8 / 4,
+      freq_region_9_14 = region_9_14 / 6
+    ) %>%
+    mutate(
+      mean = ifelse(is.na(mean), 0, mean),
+      IQR = ifelse(is.na(IQR), 0, IQR),
+      range = ifelse(is.infinite(range), 0, range),
+      min = ifelse(is.infinite(min), 0, min),
+    ) %>%
+    replace(is.na(.), 0)
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Read in files with `get_mismatch` and combine
+
+*Both IUPAC_mismatch_<number> and mismatch_data_<number> need to be the same*
+
+```{r message=FALSE, warning=FALSE, include=FALSE, results='hide'}
+selcted_mismatch_function <- IUPAC_mismatch_1
+
+L2_5 <- get_mismatch(fasta_path = 'data_files/crRNA_5_fasta.txt', number = 1, selcted_mismatch_function)
+L4_5 <- get_mismatch(fasta_path = 'data_files/crRNA_5_fasta.txt', number = 2, selcted_mismatch_function)
+
+L2_9 <- get_mismatch(fasta_path = 'data_files/crRNA_9_fasta.txt', number = 1, selcted_mismatch_function)
+L4_9 <- get_mismatch(fasta_path = 'data_files/crRNA_9_fasta.txt', number = 2, selcted_mismatch_function)
+
+L2_29 <- get_mismatch(fasta_path = 'data_files/crRNA_29_fasta.txt', number = 1, selcted_mismatch_function)
+L4_29 <- get_mismatch(fasta_path = 'data_files/crRNA_29_fasta.txt', number = 2, selcted_mismatch_function)
+
+L2_33 <- get_mismatch(fasta_path = 'data_files/crRNA_33_fasta.txt', number = 1, selcted_mismatch_function)
+L4_33 <- get_mismatch(fasta_path = 'data_files/crRNA_33_fasta.txt', number = 2, selcted_mismatch_function)
+
+(mismatch_data_1 <- bind_rows(L2_5, L4_5,           
+                           L2_9, L4_9,
+                           L2_29, L4_29,
+                           L2_33, L4_33, 
+                           .id = 'id') %>% 
+  mutate(
+    id = case_when(
+      id == '1' ~ 'L2_5',
+      id == '2' ~ 'L4_5',
+      id == '3' ~ 'L2_9',
+      id == '4' ~ 'L4_9',
+      id == '5' ~ 'L2_29',
+      id == '6' ~ 'L4_29',
+      id == '7' ~ 'L2_33',
+      id == '8' ~ 'L4_33'
+    )
+  ))
+```
+
+
+
+
+
+
+
+
+
+
+#### Threshold based on maximum signal
+
+```{r}
+(signal_data <- readxl::read_xlsx('data_files/signals.xlsx', na = 'NA') %>% 
+  filter(!str_detect(id, "_se")) %>% 
+  select(id, Negative, everything()) %>% 
+  pivot_longer(!id:Negative, names_to = 'name', values_to = 'signal', values_drop_na = TRUE) %>% 
+  group_by(id) %>% 
+  mutate(
+    signal_max_20percent = max(signal) * 0.2,
+    signal_threshold = case_when(
+      signal > signal_max_20percent ~ 'Positive',
+      signal < signal_max_20percent ~ 'Negative'
+    ),
+    signal_threshold = as.factor(signal_threshold)
+  )
+)
+  
+```
+
+```{r}
+signal_data %>% 
+  group_by(signal_threshold) %>% 
+  count
+```
+
+### Add PFS
+
+```{r}
+(pfs <- readxl::read_xlsx('data_files/PFS.xlsx') %>% 
+  mutate(
+    name = str_replace_all(name, pattern = '-', replacement = ''),
+    pfs_1 = case_when(
+      pfs_1 == 'A' ~ 1,
+      pfs_1 == 'T' ~ 2,
+      pfs_1 == 'C' ~ 3,
+      pfs_1 == 'G' ~ 4
+    ),
+    pfs_2 = case_when(
+      pfs_2 == 'A' ~ 1,
+      pfs_2 == 'T' ~ 2,
+      pfs_2 == 'C' ~ 3,
+      pfs_2 == 'G' ~ 4
+    )
+  ))
+```
+
+
+```{r}
+signal_data <- left_join(signal_data, pfs,  by = c("id", "name"))
+```
+
+
+
+```{r}
+(combined_1 <- mismatch_data_1 %>% 
+  left_join(., signal_data, on='id') %>% 
+  na.omit())
+
+# (combined_2 <- mismatch_data_2 %>% 
+#   left_join(., signal_data, on='id') %>% 
+#   na.omit())
+
+# (combined_3 <- mismatch_data_3 %>% 
+#   left_join(., signal_data, on='id') %>% 
+#   na.omit())
+```
+
+
+
+### Box plot
+
+```{r, fig.width=5.5, fig.height=3}
+combined_1 %>%
+  mutate(
+    id = case_when(
+      id == 'L2_29' ~ 'Lineage 2, crRNA #29',
+      id == 'L2_33' ~ 'Lineage 2, crRNA #33',
+      id == 'L2_5' ~ 'Lineage 2, crRNA #5',
+      id == 'L2_9' ~ 'Lineage 2, crRNA #9',
+      id == 'L4_29' ~ 'Lineage 4, crRNA #29',
+      id == 'L4_33' ~ 'Lineage 4, crRNA #33',
+      id == 'L4_5' ~ 'Lineage 4, crRNA #5',
+      id == 'L4_9' ~ 'Lineage 4, crRNA #9'
+    ),
+    id = fct_relevel(id, c('Lineage 2, crRNA #5',
+                           'Lineage 2, crRNA #9',
+                           'Lineage 2, crRNA #29',
+                           'Lineage 2, crRNA #33',
+                           'Lineage 4, crRNA #5',
+                           'Lineage 4, crRNA #9',
+                           'Lineage 4, crRNA #29',
+                           'Lineage 4, crRNA #33'))
+  ) %>% 
+  ggplot() +
+  geom_boxplot(aes(as.factor(n), signal, fill=id), color='black') +
+  facet_wrap(.~id, ncol = 4) +
+  theme_bw() +
+  theme2 +
+  theme(
+    axis.text.x = element_text(size = 10, color = "black"),
+    axis.text.y = element_text(size = 12, color = "black"),
+    axis.title.x = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 14, color = "black"),
+    strip.text.x = element_text(size = 12, color = "black"),
+    strip.text.y = element_text(size = 14, color = "black"),
+  ) +
+  guides(fill='none') +
+  scale_x_discrete(breaks = c(0, 2, 4, 6, 8, 10)) + 
+  scale_fill_brewer(palette = 'Set1') + 
+  labs(x = 'Total number of mismatches', y = 'Signal')
+```
+
+
+
+
+
+
+
+
+# -----------------------------
+
+# Model
+
+## Choose mismatch function results
+
+```{r}
+combined <- combined_1
+mismatch_data <- mismatch_data_1
+```
+
+
+
+## Classification
+
+
+```{r}
+(combined <- mismatch_data %>% 
+  left_join(., signal_data, on='id') %>% 
+  na.omit())
+```
+
+```{r}
+(combined <- combined %>% 
+  select(n:freq_region_9_14, pfs_1:pfs_2, signal_threshold)) 
+```
+
+
+
+```{r}
+combined %>% 
+  select(n, min, max) %>%
+  rownames_to_column() %>% 
+  pivot_longer(!rowname, values_to = 'values', names_to = 'names') %>% 
+  mutate(
+    names = factor(names, levels = c('n', 'min', 'max'))
+  ) %>% 
+  ggplot() +
+  geom_histogram(aes(values, fill=names), bins=28, color='black') +
+  facet_wrap(.~names) +
+  guides(fill='none') +
+  theme2 +
+  theme(strip.text.x = element_text(size = 18, color = "black")) +
+  labs(x = 'Range', y = 'Count')
+```
+
+
+
+
+
+### Rulefit
+
+
+```{r}
+set.seed(5)
+combined_split <- initial_split(combined, strata = signal_threshold, prop = 0.9)
+combined_train <- training(combined_split)
+combined_test <- testing(combined_split)
+```
+
+
+
+
+```{r}
+rule_fit_spec <- rule_fit(trees = 2, tree_depth = 3, penalty = 0.01) %>%
+  set_engine("xrf") %>%
+  set_mode("classification") 
+
+rule_fit_fit <- rule_fit_spec %>% 
+  fit(signal_threshold ~ ., data = combined_train) 
+```
+
+
+```{r}
+(rf_res <- tidy(rule_fit_fit, penalty = 0.01))
+```
+
+
+```{r}
+rf_res %>% 
+  mutate(
+    abs_estimate = abs(estimate)
+  ) %>% 
+  arrange(desc(abs_estimate)) %>% 
+  filter(!rule_id == '(Intercept)') %>% 
+  top_n(10)
+```
+
+
+
+```{r}
+(rf_variable_res <- tidy(rule_fit_fit, penalty = 0.01, unit = "columns"))
+```
+
+
+
+
+
+
+
+```{r}
+num_rules <- sum(grepl("^r[0-9]*_", unique(rf_res$rule_id))) + 1
+
+rf_variable_res %>% 
+  dplyr::filter(term != "(Intercept)") %>% 
+  group_by(term) %>% 
+  summarize(effect = sum(abs(estimate)), .groups = "drop") %>% 
+  ungroup() %>% 
+  # normalize by number of possible occurrences
+  mutate(effect = effect / num_rules ) %>% 
+  arrange(desc(effect)) 
+```
+
+```{r}
+rf_variable_res %>% 
+  filter(term != "(Intercept)") %>% 
+  group_by(term) %>% 
+  summarize(effect = sum(abs(estimate)), .groups = "drop") %>% 
+  ungroup() %>% 
+  # normalize by number of possible occurrences
+  mutate(
+    effect = effect / num_rules,
+    term = fct_reorder(term, -effect),
+    term = fct_rev(term)
+    ) %>% 
+  top_n(10, term) %>% 
+  ggplot() +
+  geom_col(aes(term, effect), fill='black') +
+  coord_flip() +
+  theme2 +
+  labs(x = 'Feature', y = 'Relative effect on predictions')
+```
+
+
+
+
+
+```{r}
+cr_preds <- predict(rule_fit_fit, new_data = combined_test) %>%
+  bind_cols(combined_test) %>%
+  select(.pred_class, signal_threshold)
+```
+
+
+
+
+```{r, fig.width=3, fig.height=2.5}
+cr_preds %>% 
+  conf_mat(truth = signal_threshold,
+           estimate = .pred_class) %>% 
+  tidy() %>% 
+  mutate(name = case_when(
+    name == 'cell_1_1' ~ 'Negative_Negative',
+    name == 'cell_2_1' ~ 'Negative_Positive',
+    name == 'cell_1_2' ~ 'Positive_Negative',
+    name == 'cell_2_2' ~ 'Positive_Positive')) %>% 
+  separate(name, into = c('True', 'Predicted'), sep = '_') %>% 
+  mutate(
+    Predicted = fct_rev(Predicted),
+    total = sum(value)
+  ) %>% 
+  ggplot() +
+  geom_tile(aes(True, Predicted, fill = factor(value/total))) +
+  geom_text(aes(True, Predicted, label = sprintf("%1.2f", value/total)), vjust = 1) +
+  scale_fill_brewer(palette = 'Greens') +
+  guides(fill='none') +
+  theme2
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
